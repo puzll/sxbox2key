@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <linux/input.h>
 #include <stddef.h>
 
@@ -57,12 +58,52 @@ JNIEXPORT jlong JNICALL Java_JsEvDev_getAbs(JNIEnv* env, __attribute__((unused))
     return result;
 }
 
-JNIEXPORT jboolean JNICALL Java_JsEvDev_read(JNIEnv* env, __attribute__((unused)) jclass unused, jlong fd, jobject buf)
-{
-    struct input_event* buf_ptr = (struct input_event*)(**env).GetDirectBufferAddress(env, buf);
-    if (buf_ptr == NULL) return JNI_FALSE;
+static int pipefd[2];
 
-    return read(fd, buf_ptr, sizeof(struct input_event)) == sizeof(struct input_event);
+JNIEXPORT jlong JNICALL Java_JsEvDev_read(JNIEnv* env, __attribute__((unused)) jclass unused, jlong fd, jobject buf)
+{
+    jlong len = (**env).GetDirectBufferCapacity(env, buf);
+    if (len <= 0) return -1;
+
+    void* buf_ptr = (**env).GetDirectBufferAddress(env, buf);
+    if (buf_ptr == NULL) return -1;
+
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    FD_SET(pipefd[0], &rfds);
+    int nfds = (fd >= pipefd[0] ? fd : pipefd[0]) + 1;
+    int cnt = select(nfds, &rfds, NULL, NULL, NULL);
+    if (cnt <= 0) return -1;
+
+    if (FD_ISSET(pipefd[0], &rfds)) return 0;
+    if (FD_ISSET(fd, &rfds)) return read(fd, buf_ptr, len);
+    return -1;
+}
+
+JNIEXPORT jlong JNICALL Java_JsEvDev_openPipe(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass unused)
+{
+    return pipe(pipefd);
+}
+
+JNIEXPORT void JNICALL Java_JsEvDev_closePipe(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass unused)
+{
+    if (pipefd[0]) close(pipefd[0]);
+    if (pipefd[1]) close(pipefd[1]);
+    pipefd[0] = 0;
+    pipefd[1] = 0;
+}
+
+JNIEXPORT jlong JNICALL Java_JsEvDev_cancelOn(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass unused)
+{
+    char buf = 0;
+    return write(pipefd[1], &buf, 1);
+}
+
+JNIEXPORT jlong JNICALL Java_JsEvDev_cancelOff(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass unused)
+{
+    char buf = 0;
+    return read(pipefd[0], &buf, 1);
 }
 
 JNIEXPORT jint JNICALL Java_JsEvDev_input_1event_1size(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz)

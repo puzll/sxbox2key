@@ -4,14 +4,19 @@ import scala.swing.Swing.pair2Dimension
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-//import java.util.concurrent.atomic.AtomicReference
 import LocalImplicits.Fixsizable
 import scala.concurrent._
 import scala.concurrent.duration.Duration
 import scala.concurrent.ExecutionContext.Implicits.global
 
 object Main extends SimpleSwingApplication {
+
   System.loadLibrary("SXBox2Key")
+  if (JsEvDev.openPipe() < 0) throw new Exception
+  val display = XTestFakeKey.openDisplay()
+  if (display == 0) throw new Exception
+  if (!XTestFakeKey.queryExtension(display)) throw new Exception
+
   lazy val top = new MainFrame {
     title = "XBox2Key"
 
@@ -128,56 +133,53 @@ object Main extends SimpleSwingApplication {
     }
   }
 
-  override def shutdown() { top.jst.stop() }
+  override def shutdown() {
+    top.jst.stop()
+    JsEvDev.closePipe()
+    XTestFakeKey.closeDisplay(display)
+  }
 }
 
-/*object JsThread {
-  abstract sealed class State { val cont: Boolean }
-  case class Next(filename: String) extends State { val cont = false }
-  object Stop extends State { val cont = false }
-  object Continue extends State { val cont = true }
-}*/
-
 class JsThread(filename: String) {
-  //import JsThread._
-  //var state = new AtomicReference[State](Continue)
   @volatile private var cont = true
-  @volatile private var next: Option[String] = Some(filename)
+  private var f = newFuture(filename)
 
   private def read(js: Joystick) {
-    val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE)
+    val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE<<10)
     buf.order(ByteOrder.nativeOrder())
     while (cont) {
-      if (js.read(buf) && buf.getShort(JsEvDev.INPUT_EVENT_TYPE_OFFSET) != 0) {
-        buf.position(JsEvDev.INPUT_EVENT_TYPE_OFFSET);
+      val cnt = js.read(buf)
+      if (cnt <= 0) throw new Exception
+      buf.rewind()
+      while (buf.position < cnt) {
+        buf.position(buf.position + JsEvDev.INPUT_EVENT_TYPE_OFFSET);
         val evtype = buf.getShort()
         val evcode = buf.getShort()
         val evvalue = buf.getInt()
-        Swing.onEDT { Main.top.input(evtype, evcode, evvalue) }
-        Thread.sleep(1)
+        if (evtype > 0) {
+          Swing.onEDT { Main.top.input(evtype, evcode, evvalue) }
+        }
       }
     }
-    cont = true
   }
 
-  private val f = Future {
+  private def newFuture(filename: String) = Future {
     blocking {
-      while(next.nonEmpty) next match {
-        case Some (filename) => if (Joystick.withFilename(filename)(read).isEmpty) Thread.sleep(1000)
-        case None =>
-      }
+      Joystick.withFilename(filename)(read)
     }
   }
 
   def start(filename: String) {
-    next = Some(filename)
-    cont = false
+    stop()
+    f = newFuture(filename)
   }
 
   def stop() {
-    next = None
     cont = false
+    JsEvDev.cancelOn()
     Await.ready(f, Duration.Inf)
+    JsEvDev.cancelOff()
+    cont = true
   }
 }
 
@@ -248,7 +250,7 @@ class Joystick private (fd: Long) {
     info
   }
 
-  def read(buf: ByteBuffer): Boolean = JsEvDev.read(fd, buf)
+  def read(buf: ByteBuffer): Long = JsEvDev.read(fd, buf)
 
   def checkXBox(): Option[AxesInfo] = {
     val typeBits = getTypeBits()

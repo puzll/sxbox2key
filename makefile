@@ -14,7 +14,7 @@ JsEvDev.class: JsEvDev.java
 	javac JsEvDev.java
 
 libSXBox2Key.so: JsEvDev.o XTestFakeKey.o
-	gcc $(LFLAGS) JsEvDev.o XTestFakeKey.o -o libSXBox2Key.so
+	gcc $(LFLAGS) JsEvDev.o XTestFakeKey.o -o libSXBox2Key.so -lX11 -lXtst
 
 JsEvDev.o: JsEvDev.c JsEvDev.h
 	gcc JsEvDev.c $(CFLAGS)

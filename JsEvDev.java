@@ -53,7 +53,11 @@ public class JsEvDev {
     public static native String getName(long fd);
     public static native long getBits(long fd, short ev, byte[] bits);
     public static native long getAbs(long fd, short code, int[] info);
-    public static native boolean read(long fd, ByteBuffer buf);
+    public static native long read(long fd, ByteBuffer buf);
+    public static native long openPipe();
+    public static native void closePipe();
+    public static native long cancelOn();
+    public static native long cancelOff();
     public static native int input_event_size();
     public static native int input_event_type_offset();
 }
