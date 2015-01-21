@@ -11,11 +11,19 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import java.awt.Robot
+import java.awt.KeyboardFocusManager
 
 object KeyDialog extends Dialog {
+
   title = "Key Reader"
   modal = true
   var key = Key.Undefined
+
+  peer.setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS, Set.empty.asJava)
+  peer.setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS, Set.empty.asJava)
+  peer.setFocusTraversalKeys(KeyboardFocusManager.UP_CYCLE_TRAVERSAL_KEYS, Set.empty.asJava)
+  peer.setFocusTraversalKeys(KeyboardFocusManager.DOWN_CYCLE_TRAVERSAL_KEYS, Set.empty.asJava)
+
   contents = new Label("Press a key") {
     border = Swing.EmptyBorder(40, 40, 40, 40)
     focusable = true
