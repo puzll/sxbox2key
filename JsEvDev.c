@@ -83,7 +83,7 @@ JNIEXPORT jlong JNICALL Java_JsEvDev_read(JNIEnv* env, __attribute__((unused)) j
 
 JNIEXPORT jlong JNICALL Java_JsEvDev_openPipe(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass unused)
 {
-    return pipe(pipefd);
+    return (pipefd[0] == 0) ? pipe(pipefd) : 0;
 }
 
 JNIEXPORT void JNICALL Java_JsEvDev_closePipe(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass unused)

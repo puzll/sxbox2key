@@ -12,13 +12,28 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 import java.awt.Robot
 
+object KeyDialog extends Dialog {
+  title = "Key Reader"
+  modal = true
+  var key = Key.Undefined
+  contents = new Label("Press a key") {
+    border = Swing.EmptyBorder(40, 40, 40, 40)
+    focusable = true
+    listenTo(keys)
+    reactions += {
+      case KeyPressed(_, pressedkey, _, _) =>
+        key = pressedkey
+        close()
+    }
+  }
+}
+
 object Main extends SimpleSwingApplication {
 
-  System.loadLibrary("SXBox2Key")
+  System.loadLibrary("SXB2KJsEvDev")
   if (JsEvDev.openPipe() < 0) throw new Exception
-  val display = XTestFakeKey.openDisplay()
-  if (display == 0) throw new Exception
-  if (!XTestFakeKey.queryExtension(display)) throw new Exception
+
+  val (jnames, jinfos) = Joystick.scanEvDir().unzip
 
   val butt2Key = mutable.Map.empty[Int, Key.Value]
   val axis2Key = mutable.Map.empty[(Int, Boolean), Key.Value]
@@ -61,8 +76,6 @@ object Main extends SimpleSwingApplication {
       ("DPad Down", JsEvDev.ABS_HAT0Y, true)
     )
 
-    val (jnames, jinfos) = Joystick.scanEvDir().unzip
-
     val jsSelect = new ComboBox(jnames) {
       maximumSize = (Int.MaxValue, preferredSize.height)
     }
@@ -73,10 +86,10 @@ object Main extends SimpleSwingApplication {
     val buttButtons = Map.empty ++ (for ((bname, bcode) <- buttons) yield (bcode, new Button(".")))
     val axesButtons = Map.empty ++ (for ((aname, acode, apos) <- axes) yield ((acode, apos), new Button(".")))
 
-    val jst = new JsThread(jinfos(0).filename)
+    val jst = new JsThread(jinfos(0))
     listenTo(jsSelect.selection)
     reactions += {
-      case SelectionChanged(_) => jst.start(jinfos(jsSelect.selection.index).filename)
+      case SelectionChanged(_) => jst.start(jinfos(jsSelect.selection.index))
     }
 
     def input(evtype: Short, code: Short, value: Int) {
@@ -101,15 +114,16 @@ object Main extends SimpleSwingApplication {
             contents += new BoxPanel(Orientation.Horizontal) {
               val bar = buttBars(bcode)
               val butt = buttButtons(bcode)
-              val h = butt.preferredSize.height-2
+              val h = butt.preferredSize.height-3
               maximumSize = (Int.MaxValue, h)
               bar.allSizes = (h, h)
-              butt.allSizes = (2*h, h)
+              butt.allSizes = (4*h, h)
               bar.max = 1
               butt.reactions += {
-                case ButtonClicked(_) => butt2Key.synchronized {
-                  butt2Key(bcode) = Key.Space
-                }
+                case ButtonClicked(_) =>
+                  KeyDialog.open()
+                  butt2Key.synchronized { butt2Key(bcode) = KeyDialog.key }
+                  butt.text = KeyDialog.key.toString
               }
               contents += Swing.HGlue
               contents += new Label(bname)
@@ -128,15 +142,16 @@ object Main extends SimpleSwingApplication {
             contents += new BoxPanel(Orientation.Horizontal) {
               val bar = axesBars(acode, apos)
               val butt = axesButtons(acode, apos)
-              val h = butt.preferredSize.height-2
+              val h = butt.preferredSize.height-3
               maximumSize = (Int.MaxValue, h)
-              bar.allSizes = (3*h, h)
-              butt.allSizes = (2*h, h)
+              bar.allSizes = (4*h, h)
+              butt.allSizes = (4*h, h)
               bar.max = if (apos) jinfos(0).axes(acode)._2 else -jinfos(0).axes(acode)._1
               butt.reactions += {
-                case ButtonClicked(_) => axis2Key.synchronized {
-                  axis2Key((acode, apos)) = Key.Space
-                }
+                case ButtonClicked(_) =>
+                  KeyDialog.open()
+                  axis2Key.synchronized { axis2Key((acode, apos)) = KeyDialog.key }
+                  butt.text = KeyDialog.key.toString
               }
               contents += Swing.HGlue
               contents += new Label(aname)
@@ -155,15 +170,48 @@ object Main extends SimpleSwingApplication {
   override def shutdown() {
     top.jst.stop()
     JsEvDev.closePipe()
-    XTestFakeKey.closeDisplay(display)
   }
 }
 
-class JsThread(filename: String) {
-  @volatile private var cont = true
-  private var f = newFuture(filename)
-  val robot = new Robot
-  val axesValue = mutable.Map.empty
+class JsThread(private var info: Joystick.Info) {
+  @volatile
+  private var cont = true
+  private var f = newFuture(info.filename)
+  private val axesValues = mutable.Map.empty[Int, Int]
+  private val robot = new Robot
+
+  private def chkbnd(oldval: Int, newval: Int, bnd: Int, key: Key.Value) {
+    if (oldval <= bnd) {
+      if (newval > bnd) robot.keyPress(key.id)
+    } else {
+      if (newval <= bnd) robot.keyRelease(key.id)
+    }
+  }
+
+  private def processEvent(evtype: Short, evcode: Short, evvalue: Int) {
+    evtype match {
+      case JsEvDev.EV_KEY =>
+        Main.butt2Key.synchronized {
+          for (key <- Main.butt2Key.get(evcode))
+            if (evvalue == 0)
+              robot.keyRelease(key.id)
+            else
+              robot.keyPress(key.id)
+        }
+      case JsEvDev.EV_ABS =>
+        val oldval = axesValues.getOrElse(evcode, 0)
+        axesValues(evcode) = evvalue
+        Main.axis2Key.synchronized {
+          for ((min, max) <- info.axes.get(evcode)) {
+            for (key <- Main.axis2Key.get((evcode, false))) chkbnd(-oldval, -evvalue, -min >> 1, key)
+            for (key <- Main.axis2Key.get((evcode, true))) chkbnd(oldval, evvalue, max >> 1, key)
+          }
+        }
+      case _ =>
+    }
+    if (evtype > 0)
+      Swing.onEDT { Main.top.input(evtype, evcode, evvalue) }
+  }
 
   private def read(js: Joystick) {
     val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE<<10)
@@ -174,33 +222,22 @@ class JsThread(filename: String) {
       buf.rewind()
       while (buf.position < cnt) {
         buf.position(buf.position + JsEvDev.INPUT_EVENT_TYPE_OFFSET);
-        val evtype = buf.getShort()
-        val evcode = buf.getShort()
-        val evvalue = buf.getInt()
-        evtype match {
-          case JsEvDev.EV_KEY => Main.butt2Key.synchronized {
-            if (evvalue == 0) Main.butt2Key.get(evcode) map ((key: Key.Value) => robot.keyRelease(key.id))
-            else Main.butt2Key.get(evcode) map ((key: Key.Value) => robot.keyPress(key.id))
-          }
-          //case JsEvDev.EV_ABS => Main.ax
-          case _ =>
-        }
-        if (evtype > 0) {
-          Swing.onEDT { Main.top.input(evtype, evcode, evvalue) }
-        }
+        processEvent(buf.getShort(), buf.getShort(), buf.getInt())
       }
     }
   }
 
   private def newFuture(filename: String) = Future {
     blocking {
-      Joystick.withFilename(filename)(read)
+      Joystick.withFilename(info.filename)(read)
     }
   }
 
-  def start(filename: String) {
+  def start(info: Joystick.Info) {
     stop()
-    f = newFuture(filename)
+    this.info = info
+    axesValues.clear()
+    f = newFuture(info.filename)
   }
 
   def stop() {
@@ -240,8 +277,9 @@ object Joystick {
     (for {
       file <- Files.newDirectoryStream(Paths.get("/dev/input")).asScala
       if (file.getFileName.toString matches "event[0-9]+")
-      result <- withFilename(file.toString) {
-        js => js.checkXBox() map (axesInfo => (s"${js.getName()} (${file.getFileName})", new Info(file.toString, axesInfo)))
+      result <- withFilename(file.toString) { js =>
+        for (axesInfo <- js.checkXBox())
+          yield (s"${js.getName()} (${file.getFileName})", new Info(file.toString, axesInfo))
       }.flatten.toList
     } yield result).toSeq
   }

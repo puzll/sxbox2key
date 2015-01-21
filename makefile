@@ -7,23 +7,17 @@
 CFLAGS = -c -Wall -Wpedantic -Wextra -std=c11 -fpic -I"/usr/lib/jvm/java-7-openjdk-amd64/include"
 LFLAGS = -fpic -shared
 
-XTestFakeKey.class: XTestFakeKey.java JsEvDev.class libSXBox2Key.so
-	javac XTestFakeKey.java
+Main.class: main.scala JsEvDev.class libSXB2KJsEvDev.so
+	scalac main.scala
 
-JsEvDev.class: JsEvDev.java
+JsEvDev.class: JsEvDev.java libSXB2KJsEvDev.so
 	javac JsEvDev.java
 
-libSXBox2Key.so: JsEvDev.o XTestFakeKey.o
-	gcc $(LFLAGS) JsEvDev.o XTestFakeKey.o -o libSXBox2Key.so -lX11 -lXtst
+libSXB2KJsEvDev.so: JsEvDev.o
+	gcc $(LFLAGS) JsEvDev.o -o libSXB2KJsEvDev.so
 
 JsEvDev.o: JsEvDev.c JsEvDev.h
 	gcc JsEvDev.c $(CFLAGS)
 
 JsEvDev.h: JsEvDev.java
 	javah JsEvDev
-
-XTestFakeKey.o: XTestFakeKey.c XTestFakeKey.h
-	gcc XTestFakeKey.c $(CFLAGS)
-
-XTestFakeKey.h: XTestFakeKey.java
-	javah XTestFakeKey
