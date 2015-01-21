@@ -1,13 +1,16 @@
 import scala.swing._
 import scala.swing.event._
 import scala.swing.Swing.pair2Dimension
-import java.io.File
+import java.nio.file._
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import LocalImplicits.Fixsizable
+import Implicits.Fixsizable
 import scala.concurrent._
 import scala.concurrent.duration.Duration
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.collection.JavaConverters._
+import scala.collection.mutable
+import java.awt.Robot
 
 object Main extends SimpleSwingApplication {
 
@@ -16,6 +19,9 @@ object Main extends SimpleSwingApplication {
   val display = XTestFakeKey.openDisplay()
   if (display == 0) throw new Exception
   if (!XTestFakeKey.queryExtension(display)) throw new Exception
+
+  val butt2Key = mutable.Map.empty[Int, Key.Value]
+  val axis2Key = mutable.Map.empty[(Int, Boolean), Key.Value]
 
   lazy val top = new MainFrame {
     title = "XBox2Key"
@@ -64,6 +70,9 @@ object Main extends SimpleSwingApplication {
     val buttBars = Map.empty ++ (for ((bname, bcode) <- buttons) yield (bcode, new ProgressBar))
     val axesBars = Map.empty ++ (for ((aname, acode, apos) <- axes) yield ((acode, apos), new ProgressBar))
 
+    val buttButtons = Map.empty ++ (for ((bname, bcode) <- buttons) yield (bcode, new Button(".")))
+    val axesButtons = Map.empty ++ (for ((aname, acode, apos) <- axes) yield ((acode, apos), new Button(".")))
+
     val jst = new JsThread(jinfos(0).filename)
     listenTo(jsSelect.selection)
     reactions += {
@@ -91,12 +100,17 @@ object Main extends SimpleSwingApplication {
             contents += Swing.VStrut(1)
             contents += new BoxPanel(Orientation.Horizontal) {
               val bar = buttBars(bcode)
-              val butt = new Button(bcode.toString)
+              val butt = buttButtons(bcode)
               val h = butt.preferredSize.height-2
               maximumSize = (Int.MaxValue, h)
               bar.allSizes = (h, h)
               butt.allSizes = (2*h, h)
               bar.max = 1
+              butt.reactions += {
+                case ButtonClicked(_) => butt2Key.synchronized {
+                  butt2Key(bcode) = Key.Space
+                }
+              }
               contents += Swing.HGlue
               contents += new Label(bname)
               contents += Swing.HStrut(relGap)
@@ -113,12 +127,17 @@ object Main extends SimpleSwingApplication {
             contents += Swing.VStrut(1)
             contents += new BoxPanel(Orientation.Horizontal) {
               val bar = axesBars(acode, apos)
-              val butt = new Button(acode.toString)
+              val butt = axesButtons(acode, apos)
               val h = butt.preferredSize.height-2
               maximumSize = (Int.MaxValue, h)
               bar.allSizes = (3*h, h)
               butt.allSizes = (2*h, h)
               bar.max = if (apos) jinfos(0).axes(acode)._2 else -jinfos(0).axes(acode)._1
+              butt.reactions += {
+                case ButtonClicked(_) => axis2Key.synchronized {
+                  axis2Key((acode, apos)) = Key.Space
+                }
+              }
               contents += Swing.HGlue
               contents += new Label(aname)
               contents += Swing.HStrut(relGap)
@@ -143,6 +162,8 @@ object Main extends SimpleSwingApplication {
 class JsThread(filename: String) {
   @volatile private var cont = true
   private var f = newFuture(filename)
+  val robot = new Robot
+  val axesValue = mutable.Map.empty
 
   private def read(js: Joystick) {
     val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE<<10)
@@ -156,6 +177,14 @@ class JsThread(filename: String) {
         val evtype = buf.getShort()
         val evcode = buf.getShort()
         val evvalue = buf.getInt()
+        evtype match {
+          case JsEvDev.EV_KEY => Main.butt2Key.synchronized {
+            if (evvalue == 0) Main.butt2Key.get(evcode) map ((key: Key.Value) => robot.keyRelease(key.id))
+            else Main.butt2Key.get(evcode) map ((key: Key.Value) => robot.keyPress(key.id))
+          }
+          //case JsEvDev.EV_ABS => Main.ax
+          case _ =>
+        }
         if (evtype > 0) {
           Swing.onEDT { Main.top.input(evtype, evcode, evvalue) }
         }
@@ -183,7 +212,7 @@ class JsThread(filename: String) {
   }
 }
 
-object LocalImplicits {
+object Implicits {
   implicit class Fixsizable(c: Component) {
     def allSizes: Dimension = throw new Exception
     def allSizes_=(d: Dimension) {
@@ -208,13 +237,13 @@ object Joystick {
   }
 
   def scanEvDir(): Seq[(String, Info)] = {
-    for {
-      file <- (new File("/dev/input")).listFiles()
-      if (file.getName() matches "event[0-9]+")
-      result <- withFilename(file.getCanonicalPath()) {
-        js => js.checkXBox() map (axesInfo => (s"${js.getName()} (${file.getName()})", new Info(file.getCanonicalPath(), axesInfo)))
+    (for {
+      file <- Files.newDirectoryStream(Paths.get("/dev/input")).asScala
+      if (file.getFileName.toString matches "event[0-9]+")
+      result <- withFilename(file.toString) {
+        js => js.checkXBox() map (axesInfo => (s"${js.getName()} (${file.getFileName})", new Info(file.toString, axesInfo)))
       }.flatten.toList
-    } yield result
+    } yield result).toSeq
   }
 
   def testBit(bits: Array[Byte], index: Int): Boolean = ((bits(index>>3) >> (index&0x7)) & 1) != 0
