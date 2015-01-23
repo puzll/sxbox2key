@@ -5,13 +5,11 @@ import java.nio.file._
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import Implicits.Fixsizable
-import scala.concurrent._
-import scala.concurrent.duration.Duration
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import java.awt.Robot
 import java.awt.KeyboardFocusManager
+import scala.xml._
 
 object KeyDialog extends Dialog {
 
@@ -41,75 +39,76 @@ object Main extends SimpleSwingApplication {
   System.loadLibrary("SXB2KJsEvDev")
   if (JsEvDev.openPipe() < 0) throw new Exception
 
-  val (jnames, jinfos) = Joystick.scanEvDir().unzip
+  val jsSelect = new ComboBox(Joystick.names) {
+    maximumSize = (Int.MaxValue, preferredSize.height)
+  }
 
-  val butt2Key = mutable.Map.empty[Int, Key.Value]
-  val axis2Key = mutable.Map.empty[(Int, Boolean), Key.Value]
+  val (buttBars, buttButtons) = {
+    for ((code, _) <- Mapping.buttons) yield {
+      val butt = new Button(".")
+      val bar = new ProgressBar
+      butt.reactions += {
+        case ButtonClicked(_) =>
+          KeyDialog.open()
+          Mapping.butt2Key(code, KeyDialog.key)
+          butt.text = KeyDialog.key.toString
+      }
+      bar.max = 1
+      (code -> bar, code -> butt)
+    }
+  }.unzip match { case (a, b) => (a.toMap, b.toMap) }
 
-  lazy val top = new MainFrame {
+  val (axesBars, axesButtons) = {
+    for ((code, pos, _) <- Mapping.axes) yield {
+      val butt = new Button(".")
+      val bar = new ProgressBar
+      butt.reactions += {
+        case ButtonClicked(_) =>
+          KeyDialog.open()
+          Mapping.axis2Key(code, pos, KeyDialog.key)
+          butt.text = KeyDialog.key.toString
+      }
+      ((code, pos) -> bar, (code, pos) -> butt)
+    }
+  }.unzip match { case (a, b) => (a.toMap, b.toMap) }
+
+
+  def input(evtype: Short, code: Short, value: Int) {
+    evtype match {
+      case JsEvDev.EV_KEY =>
+        for (bar <- buttBars.get(code)) bar.value = value
+      case JsEvDev.EV_ABS =>
+        for (bar <- axesBars.get(code, true)) bar.value = 0 max value
+        for (bar <- axesBars.get(code, false)) bar.value = 0 max -value
+      case _ =>
+    }
+  }
+
+  val jst = new JsThread(input)
+
+  def onJsSelect(index: Int) {
+    for ((code, pos, _) <- Mapping.axes)
+      axesBars(code, pos).max =
+        if (pos)
+          Joystick.infos(index).axes(code)._2
+        else
+          -Joystick.infos(index).axes(code)._1
+    jst.start(Joystick.infos(0))
+  }
+
+  if (Joystick.infos.nonEmpty) onJsSelect(jsSelect.selection.index)
+
+  listenTo(jsSelect.selection)
+  reactions += {
+    case SelectionChanged(_) => onJsSelect(jsSelect.selection.index)
+  }
+
+  def top = new MainFrame {
     title = "XBox2Key"
 
     val contGap = 10
     val relGap = 5
     val unrelGap = 10
-
-    val buttons = Array(
-      ("Button A", JsEvDev.BTN_A),
-      ("Button B", JsEvDev.BTN_B),
-      ("Button X", JsEvDev.BTN_X),
-      ("Button Y", JsEvDev.BTN_Y),
-      ("Button LB", JsEvDev.BTN_TL),
-      ("Button RB", JsEvDev.BTN_TR),
-      ("Button Back", JsEvDev.BTN_SELECT),
-      ("Button Start", JsEvDev.BTN_START),
-      ("Button Left Stick", JsEvDev.BTN_THUMBL),
-      ("Button Right Stick", JsEvDev.BTN_THUMBR),
-      ("Button Mode", JsEvDev.BTN_MODE)
-    )
-
-    val axes = Array[(String, Short, Boolean)](
-      ("Left Stick Left", JsEvDev.ABS_X, false),
-      ("Left Stick Right", JsEvDev.ABS_X, true),
-      ("Left Stick Up", JsEvDev.ABS_Y, false),
-      ("Left Stick Down", JsEvDev.ABS_Y, true),
-      ("Right Stick Left", JsEvDev.ABS_RX, false),
-      ("Right Stick Right", JsEvDev.ABS_RX, true),
-      ("Right Stick Up", JsEvDev.ABS_RY, false),
-      ("Right Stick Down", JsEvDev.ABS_RY, true),
-      ("Left Trigger", JsEvDev.ABS_Z, true),
-      ("Right Trigger", JsEvDev.ABS_RZ, true),
-      ("DPad Left", JsEvDev.ABS_HAT0X, false),
-      ("DPad Right", JsEvDev.ABS_HAT0X, true),
-      ("DPad Up", JsEvDev.ABS_HAT0Y, false),
-      ("DPad Down", JsEvDev.ABS_HAT0Y, true)
-    )
-
-    val jsSelect = new ComboBox(jnames) {
-      maximumSize = (Int.MaxValue, preferredSize.height)
-    }
-
-    val buttBars = Map.empty ++ (for ((bname, bcode) <- buttons) yield (bcode, new ProgressBar))
-    val axesBars = Map.empty ++ (for ((aname, acode, apos) <- axes) yield ((acode, apos), new ProgressBar))
-
-    val buttButtons = Map.empty ++ (for ((bname, bcode) <- buttons) yield (bcode, new Button(".")))
-    val axesButtons = Map.empty ++ (for ((aname, acode, apos) <- axes) yield ((acode, apos), new Button(".")))
-
-    val jst = new JsThread(jinfos(0))
-    listenTo(jsSelect.selection)
-    reactions += {
-      case SelectionChanged(_) => jst.start(jinfos(jsSelect.selection.index))
-    }
-
-    def input(evtype: Short, code: Short, value: Int) {
-      evtype match {
-        case JsEvDev.EV_KEY => buttBars.get(code) foreach (_.value = value)
-        case JsEvDev.EV_ABS => {
-          axesBars.get(code, true) foreach (_.value = 0 max value)
-          axesBars.get(code, false) foreach (_.value = -(0 min value))
-        }
-        case _ =>
-      }
-    }
 
     contents = new BoxPanel(Orientation.Vertical) {
       border = Swing.EmptyBorder(contGap, contGap, contGap, contGap)
@@ -117,22 +116,15 @@ object Main extends SimpleSwingApplication {
       contents += Swing.VStrut(unrelGap)
       contents += new BoxPanel(Orientation.Horizontal) {
         contents += new BoxPanel(Orientation.Vertical) {
-          for ((bname, bcode) <- buttons) {
+          for ((code, bname) <- Mapping.buttons) {
             contents += Swing.VStrut(1)
             contents += new BoxPanel(Orientation.Horizontal) {
-              val bar = buttBars(bcode)
-              val butt = buttButtons(bcode)
+              val bar = buttBars(code)
+              val butt = buttButtons(code)
               val h = butt.preferredSize.height-3
               maximumSize = (Int.MaxValue, h)
               bar.allSizes = (h, h)
               butt.allSizes = (4*h, h)
-              bar.max = 1
-              butt.reactions += {
-                case ButtonClicked(_) =>
-                  KeyDialog.open()
-                  butt2Key.synchronized { butt2Key(bcode) = KeyDialog.key }
-                  butt.text = KeyDialog.key.toString
-              }
               contents += Swing.HGlue
               contents += new Label(bname)
               contents += Swing.HStrut(relGap)
@@ -145,22 +137,15 @@ object Main extends SimpleSwingApplication {
         }
         contents += Swing.HStrut(unrelGap)
         contents += new BoxPanel(Orientation.Vertical) {
-          for ((aname, acode, apos) <- axes) {
+          for ((code, pos, aname) <- Mapping.axes) {
             contents += Swing.VStrut(1)
             contents += new BoxPanel(Orientation.Horizontal) {
-              val bar = axesBars(acode, apos)
-              val butt = axesButtons(acode, apos)
+              val bar = axesBars(code, pos)
+              val butt = axesButtons(code, pos)
               val h = butt.preferredSize.height-3
               maximumSize = (Int.MaxValue, h)
               bar.allSizes = (4*h, h)
               butt.allSizes = (4*h, h)
-              bar.max = if (apos) jinfos(0).axes(acode)._2 else -jinfos(0).axes(acode)._1
-              butt.reactions += {
-                case ButtonClicked(_) =>
-                  KeyDialog.open()
-                  axis2Key.synchronized { axis2Key((acode, apos)) = KeyDialog.key }
-                  butt.text = KeyDialog.key.toString
-              }
               contents += Swing.HGlue
               contents += new Label(aname)
               contents += Swing.HStrut(relGap)
@@ -173,18 +158,81 @@ object Main extends SimpleSwingApplication {
         }
       }
     }
-  }
 
-  override def shutdown() {
-    top.jst.stop()
-    JsEvDev.closePipe()
+    override def closeOperation() {
+      jst.stop()
+      JsEvDev.closePipe()
+      Mapping.save()
+      super.closeOperation()
+    }
   }
 }
 
-class JsThread(private var info: Joystick.Info) {
+object Mapping {
+
+  val buttons = Array(
+    (JsEvDev.BTN_A, "Button A"),
+    (JsEvDev.BTN_B, "Button B"),
+    (JsEvDev.BTN_X, "Button X"),
+    (JsEvDev.BTN_Y, "Button Y"),
+    (JsEvDev.BTN_TL, "Button LB"),
+    (JsEvDev.BTN_TR, "Button RB"),
+    (JsEvDev.BTN_SELECT, "Button Back"),
+    (JsEvDev.BTN_START, "Button Start"),
+    (JsEvDev.BTN_THUMBL, "Button Left Stick"),
+    (JsEvDev.BTN_THUMBR, "Button Right Stick"),
+    (JsEvDev.BTN_MODE, "Button Mode")
+  )
+
+  val axes = Array(
+    (JsEvDev.ABS_X, false, "Left Stick Left"),
+    (JsEvDev.ABS_X, true, "Left Stick Right"),
+    (JsEvDev.ABS_Y, false, "Left Stick Up"),
+    (JsEvDev.ABS_Y, true, "Left Stick Down"),
+    (JsEvDev.ABS_RX, false, "Right Stick Left"),
+    (JsEvDev.ABS_RX, true, "Right Stick Right"),
+    (JsEvDev.ABS_RY, false, "Right Stick Up"),
+    (JsEvDev.ABS_RY, true, "Right Stick Down"),
+    (JsEvDev.ABS_Z, true, "Left Trigger"),
+    (JsEvDev.ABS_RZ, true, "Right Trigger"),
+    (JsEvDev.ABS_HAT0X, false, "DPad Left"),
+    (JsEvDev.ABS_HAT0X, true, "DPad Right"),
+    (JsEvDev.ABS_HAT0Y, false, "DPad Up"),
+    (JsEvDev.ABS_HAT0Y, true, "DPad Down")
+  )
+
+  private val butt = mutable.Map.empty[Int, Key.Value]
+  private val axis = mutable.Map.empty[(Int, Boolean), Key.Value]
+
+  def butt2Key(code: Int): Option[Key.Value] = butt.synchronized { butt.get(code) }
+  def butt2Key(code: Int, key: Key.Value): Unit = butt.synchronized { butt(code) = key }
+  def axis2Key(code: Int, pos: Boolean): Option[Key.Value] = axis.synchronized { axis.get((code, pos)) }
+  def axis2Key(code: Int, pos: Boolean, key: Key.Value): Unit = axis.synchronized { axis((code, pos)) = key }
+
+  def save() {
+    val node =
+    <sxbox2key>
+      <profile>
+        <mapping>
+        {
+          for ((code, key) <- butt) yield
+            <button>
+              <code>{code}</code>
+              <key>{key}</key>
+            </button>
+        }
+        </mapping>
+      </profile>
+    </sxbox2key>
+    val pp = new PrettyPrinter(100, 2)
+    Files.write(Paths.get(System.getProperty("user.home")).resolve(".sxbox2key"), pp.format(node).getBytes)
+  }
+}
+
+class JsThread(callback: (Short, Short, Int) => Unit) {
+  private var info: Joystick.Info = null
   @volatile
   private var cont = true
-  private var f = newFuture(info.filename)
   private val axesValues = mutable.Map.empty[Int, Int]
   private val robot = new Robot
 
@@ -199,34 +247,30 @@ class JsThread(private var info: Joystick.Info) {
   private def processEvent(evtype: Short, evcode: Short, evvalue: Int) {
     evtype match {
       case JsEvDev.EV_KEY =>
-        Main.butt2Key.synchronized {
-          for (key <- Main.butt2Key.get(evcode))
-            if (evvalue == 0)
-              robot.keyRelease(key.id)
-            else
-              robot.keyPress(key.id)
-        }
+        for (key <- Mapping.butt2Key(evcode))
+          if (evvalue == 0)
+            robot.keyRelease(key.id)
+          else
+            robot.keyPress(key.id)
       case JsEvDev.EV_ABS =>
         val oldval = axesValues.getOrElse(evcode, 0)
         axesValues(evcode) = evvalue
-        Main.axis2Key.synchronized {
-          for ((min, max) <- info.axes.get(evcode)) {
-            for (key <- Main.axis2Key.get((evcode, false))) chkbnd(-oldval, -evvalue, -min >> 1, key)
-            for (key <- Main.axis2Key.get((evcode, true))) chkbnd(oldval, evvalue, max >> 1, key)
-          }
+        for ((min, max) <- info.axes.get(evcode)) {
+          for (key <- Mapping.axis2Key(evcode, false)) chkbnd(-oldval, -evvalue, -min >> 1, key)
+          for (key <- Mapping.axis2Key(evcode, true)) chkbnd(oldval, evvalue, max >> 1, key)
         }
       case _ =>
     }
     if (evtype > 0)
-      Swing.onEDT { Main.top.input(evtype, evcode, evvalue) }
+      callback(evtype, evcode, evvalue)
   }
 
   private def read(js: Joystick) {
     val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE<<10)
-    buf.order(ByteOrder.nativeOrder())
+    buf.order(ByteOrder.nativeOrder)
     while (cont) {
       val cnt = js.read(buf)
-      if (cnt <= 0) throw new Exception
+      if (cnt < 0) throw new Exception
       buf.rewind()
       while (buf.position < cnt) {
         buf.position(buf.position + JsEvDev.INPUT_EVENT_TYPE_OFFSET);
@@ -235,8 +279,8 @@ class JsThread(private var info: Joystick.Info) {
     }
   }
 
-  private def newFuture(filename: String) = Future {
-    blocking {
+  private val thread = new Thread {
+    override def run() {
       Joystick.withFilename(info.filename)(read)
     }
   }
@@ -245,13 +289,13 @@ class JsThread(private var info: Joystick.Info) {
     stop()
     this.info = info
     axesValues.clear()
-    f = newFuture(info.filename)
+    thread.start()
   }
 
   def stop() {
     cont = false
     JsEvDev.cancelOn()
-    Await.ready(f, Duration.Inf)
+    thread.join()
     JsEvDev.cancelOff()
     cont = true
   }
@@ -269,7 +313,8 @@ object Implicits {
 }
 
 object Joystick {
-  type AxesInfo = Map[Short, (Int, Int)]
+
+  type AxesInfo = Map[Int, (Int, Int)]
   class Info(val filename: String, val axes: AxesInfo)
 
   def withFilename[T](filename: String)(body: Joystick => T): Option[T] = {
@@ -281,16 +326,15 @@ object Joystick {
       None
   }
 
-  def scanEvDir(): Seq[(String, Info)] = {
+  val (names, infos) =
     (for {
       file <- Files.newDirectoryStream(Paths.get("/dev/input")).asScala
       if (file.getFileName.toString matches "event[0-9]+")
       result <- withFilename(file.toString) { js =>
         for (axesInfo <- js.checkXBox())
           yield (s"${js.getName()} (${file.getFileName})", new Info(file.toString, axesInfo))
-      }.flatten.toList
-    } yield result).toSeq
-  }
+      }.flatten
+    } yield result).toSeq.unzip
 
   def testBit(bits: Array[Byte], index: Int): Boolean = ((bits(index>>3) >> (index&0x7)) & 1) != 0
 }
@@ -332,14 +376,14 @@ class Joystick private (fd: Long) {
     val axes: AxesInfo = if (testBit(typeBits, EV_ABS)) {
       val absBits = getAbsBits()
       val axes = Array[Short](ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ, ABS_HAT0X, ABS_HAT0Y)
-      Map.empty ++ (for {
+      (for {
         axis <- axes
         if testBit(absBits, axis)
         info = getAbsInfo(axis)
         min = info(1)
         max = info(2)
         if (max > 0)
-      } yield (axis, (min, max)))
+      } yield axis.toInt -> (min, max)).toMap
     } else {
       Map.empty
     }
