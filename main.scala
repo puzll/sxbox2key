@@ -73,18 +73,18 @@ object Main extends SimpleSwingApplication {
   }.unzip match { case (a, b) => (a.toMap, b.toMap) }
 
 
-  def input(evtype: Short, code: Short, value: Int) {
-    evtype match {
-      case JsEvDev.EV_KEY =>
-        for (bar <- buttBars.get(code)) bar.value = value
-      case JsEvDev.EV_ABS =>
-        for (bar <- axesBars.get(code, true)) bar.value = 0 max value
-        for (bar <- axesBars.get(code, false)) bar.value = 0 max -value
-      case _ =>
+  val jst = new JsThread((evtype: Short, code: Short, value: Int) =>
+    Swing.onEDT {
+      evtype match {
+        case JsEvDev.EV_KEY =>
+          for (bar <- buttBars.get(code)) bar.value = value
+        case JsEvDev.EV_ABS =>
+          for (bar <- axesBars.get(code, true)) bar.value = 0 max value
+          for (bar <- axesBars.get(code, false)) bar.value = 0 max -value
+        case _ =>
+      }
     }
-  }
-
-  val jst = new JsThread(input)
+  )
 
   def onJsSelect(index: Int) {
     for ((code, pos, _) <- Mapping.axes)
