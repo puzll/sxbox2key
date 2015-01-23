@@ -93,7 +93,7 @@ object Main extends SimpleSwingApplication {
           Joystick.infos(index).axes(code)._2
         else
           -Joystick.infos(index).axes(code)._1
-    jst.start(Joystick.infos(0))
+    jst.start(Joystick.infos(index))
   }
 
   if (Joystick.infos.nonEmpty) onJsSelect(jsSelect.selection.index)
