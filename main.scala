@@ -1,15 +1,15 @@
 import scala.swing._
 import scala.swing.event._
 import scala.swing.Swing.pair2Dimension
-import java.nio.file._
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import java.nio.file.{Paths, Files}
+import java.nio.{ByteBuffer, ByteOrder}
 import Implicits.Fixsizable
 import scala.collection.JavaConverters._
 import scala.collection.mutable
-import java.awt.Robot
-import java.awt.KeyboardFocusManager
-import scala.xml._
+import scala.collection.breakOut
+import java.awt.{Robot, KeyboardFocusManager}
+import scala.xml.{XML, PrettyPrinter}
+import scala.util.Try
 
 object KeyDialog extends Dialog {
 
@@ -38,12 +38,13 @@ object Main extends SimpleSwingApplication {
 
   System.loadLibrary("SXB2KJsEvDev")
   if (JsEvDev.openPipe() < 0) throw new Exception
+  Mapping.load()
 
-  val jsSelect = new ComboBox(Joystick.names) {
-    maximumSize = (Int.MaxValue, preferredSize.height)
-  }
+  val jsSelect = new ComboBox(Joystick.names)
 
-  val (buttBars, buttButtons) = {
+  case class Items(val bar: ProgressBar, val button: Button)
+
+  val buttons: Map[Int, Items] = (
     for ((code, _) <- Mapping.buttons) yield {
       val butt = new Button(".")
       val bar = new ProgressBar
@@ -54,42 +55,56 @@ object Main extends SimpleSwingApplication {
           butt.text = KeyDialog.key.toString
       }
       bar.max = 1
-      (code -> bar, code -> butt)
+      code -> Items(bar, butt)
     }
-  }.unzip match { case (a, b) => (a.toMap, b.toMap) }
+  )(breakOut)
 
-  val (axesBars, axesButtons) = {
-    for ((code, pos, _) <- Mapping.axes) yield {
+  val axes: Map[(Int, Boolean), Items] = (
+    for ((code, ispos, _) <- Mapping.axes) yield {
       val butt = new Button(".")
       val bar = new ProgressBar
       butt.reactions += {
         case ButtonClicked(_) =>
           KeyDialog.open()
-          Mapping.axis2Key(code, pos, KeyDialog.key)
+          Mapping.axis2Key(code, ispos, KeyDialog.key)
           butt.text = KeyDialog.key.toString
       }
-      ((code, pos) -> bar, (code, pos) -> butt)
+      (code, ispos) -> Items(bar, butt)
     }
-  }.unzip match { case (a, b) => (a.toMap, b.toMap) }
+  )(breakOut)
 
+  def buttonsUpdate() {
+    for {
+      (code, _) <- Mapping.buttons
+      key <- Mapping.butt2Key(code)
+      Items(_, butt) <- buttons.get(code)
+    } butt.text = key.toString
+
+    for {
+      (code, ispos, _) <- Mapping.axes
+      key <- Mapping.axis2Key(code, ispos)
+      Items(_, butt) <- axes.get(code, ispos)
+    } butt.text = key.toString
+  }
+  buttonsUpdate()
 
   val jst = new JsThread((evtype: Short, code: Short, value: Int) =>
     Swing.onEDT {
       evtype match {
         case JsEvDev.EV_KEY =>
-          for (bar <- buttBars.get(code)) bar.value = value
+          for (items <- buttons.get(code)) items.bar.value = value
         case JsEvDev.EV_ABS =>
-          for (bar <- axesBars.get(code, true)) bar.value = 0 max value
-          for (bar <- axesBars.get(code, false)) bar.value = 0 max -value
+          for (items <- axes.get(code, true)) items.bar.value = 0 max value
+          for (items <- axes.get(code, false)) items.bar.value = 0 max -value
         case _ =>
       }
     }
   )
 
   def onJsSelect(index: Int) {
-    for ((code, pos, _) <- Mapping.axes)
-      axesBars(code, pos).max =
-        if (pos)
+    for ((code, ispos, _) <- Mapping.axes)
+      axes(code, ispos).bar.max =
+        if (ispos)
           Joystick.infos(index).axes(code)._2
         else
           -Joystick.infos(index).axes(code)._1
@@ -112,6 +127,7 @@ object Main extends SimpleSwingApplication {
 
     contents = new BoxPanel(Orientation.Vertical) {
       border = Swing.EmptyBorder(contGap, contGap, contGap, contGap)
+      jsSelect.maximumSize = (Int.MaxValue, jsSelect.preferredSize.height)
       contents += jsSelect
       contents += Swing.VStrut(unrelGap)
       contents += new BoxPanel(Orientation.Horizontal) {
@@ -119,8 +135,7 @@ object Main extends SimpleSwingApplication {
           for ((code, bname) <- Mapping.buttons) {
             contents += Swing.VStrut(1)
             contents += new BoxPanel(Orientation.Horizontal) {
-              val bar = buttBars(code)
-              val butt = buttButtons(code)
+              val Items(bar, butt) = buttons(code)
               val h = butt.preferredSize.height-3
               maximumSize = (Int.MaxValue, h)
               bar.allSizes = (h, h)
@@ -137,11 +152,10 @@ object Main extends SimpleSwingApplication {
         }
         contents += Swing.HStrut(unrelGap)
         contents += new BoxPanel(Orientation.Vertical) {
-          for ((code, pos, aname) <- Mapping.axes) {
+          for ((code, ispos, aname) <- Mapping.axes) {
             contents += Swing.VStrut(1)
             contents += new BoxPanel(Orientation.Horizontal) {
-              val bar = axesBars(code, pos)
-              val butt = axesButtons(code, pos)
+              val Items(bar, butt) = axes(code, ispos)
               val h = butt.preferredSize.height-3
               maximumSize = (Int.MaxValue, h)
               bar.allSizes = (4*h, h)
@@ -206,26 +220,45 @@ object Mapping {
 
   def butt2Key(code: Int): Option[Key.Value] = butt.synchronized { butt.get(code) }
   def butt2Key(code: Int, key: Key.Value): Unit = butt.synchronized { butt(code) = key }
-  def axis2Key(code: Int, pos: Boolean): Option[Key.Value] = axis.synchronized { axis.get((code, pos)) }
-  def axis2Key(code: Int, pos: Boolean, key: Key.Value): Unit = axis.synchronized { axis((code, pos)) = key }
+  def axis2Key(code: Int, ispos: Boolean): Option[Key.Value] = axis.synchronized { axis.get((code, ispos)) }
+  def axis2Key(code: Int, ispos: Boolean, key: Key.Value): Unit = axis.synchronized { axis((code, ispos)) = key }
 
   def save() {
     val node =
     <sxbox2key>
-      <profile>
+      <profile name="Default">
         <mapping>
         {
           for ((code, key) <- butt) yield
-            <button>
-              <code>{code}</code>
-              <key>{key}</key>
-            </button>
+            <button code={code.toString} key={key.toString}/>
+        }
+        {
+          for (((code, ispos), key) <- axis) yield
+            <axis code={code.toString} ispos={ispos.toString} key={key.toString}/>
         }
         </mapping>
       </profile>
     </sxbox2key>
     val pp = new PrettyPrinter(100, 2)
     Files.write(Paths.get(System.getProperty("user.home")).resolve(".sxbox2key"), pp.format(node).getBytes)
+  }
+
+  def load() {
+    for (node <- Try { XML.loadFile(Paths.get(System.getProperty("user.home")).resolve(".sxbox2key").toString) }) {
+      butt.clear()
+      axis.clear()
+      for {
+        button <- node \ "profile" \ "mapping" \ "button"
+        code <- Try { (button \@ "code").toInt }
+        key <- Try { Key.withName(button \@ "key") }
+      } butt2Key(code, key)
+      for {
+        axis <- node \ "profile" \ "mapping" \ "axis"
+        code <- Try { (axis \@ "code").toInt }
+        ispos <- Try { (axis \@ "ispos").toBoolean }
+        key <- Try { Key.withName(axis \@ "key") }
+      } axis2Key(code, ispos, key)
+    }
   }
 }
 
@@ -383,7 +416,7 @@ class Joystick private (fd: Long) {
         min = info(1)
         max = info(2)
         if (max > 0)
-      } yield axis.toInt -> (min, max)).toMap
+      } yield axis.toInt -> (min, max))(breakOut)
     } else {
       Map.empty
     }
