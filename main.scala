@@ -76,15 +76,19 @@ object Main extends SimpleSwingApplication {
   def buttonsUpdate() {
     for {
       (code, _) <- Mapping.buttons
-      key <- Mapping.butt2Key(code)
       Items(_, butt) <- buttons.get(code)
-    } butt.text = key.toString
+    } butt.text = Mapping.butt2Key(code) match {
+      case Some(key) => key.toString
+      case None => "."
+    }
 
     for {
       (code, ispos, _) <- Mapping.axes
-      key <- Mapping.axis2Key(code, ispos)
       Items(_, butt) <- axes.get(code, ispos)
-    } butt.text = key.toString
+    } butt.text = Mapping.axis2Key(code, ispos) match {
+      case Some(key) => key.toString
+      case None => "."
+    }
   }
   buttonsUpdate()
 
@@ -314,7 +318,9 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
 
   private val thread = new Thread {
     override def run() {
-      Joystick.withFilename(info.filename)(read)
+      //JsThread.this.synchronized {
+        Joystick.withFilename(info.filename)(read)
+      //}
     }
   }
 
