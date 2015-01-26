@@ -5,7 +5,7 @@ import java.nio.file.{Paths, Files}
 import java.nio.{ByteBuffer, ByteOrder}
 import Implicits.Fixsizable
 import scala.collection.JavaConverters._
-import scala.collection.mutable
+import scala.collection.{mutable, concurrent}
 import scala.collection.breakOut
 import java.awt.{Robot, KeyboardFocusManager}
 import scala.xml.{XML, PrettyPrinter}
@@ -51,7 +51,7 @@ object Main extends SimpleSwingApplication {
       butt.reactions += {
         case ButtonClicked(_) =>
           KeyDialog.open()
-          Mapping.butt2Key(code, KeyDialog.key)
+          Mapping.butt2Key(code) = KeyDialog.key
           butt.text = KeyDialog.key.toString
       }
       bar.max = 1
@@ -66,7 +66,7 @@ object Main extends SimpleSwingApplication {
       butt.reactions += {
         case ButtonClicked(_) =>
           KeyDialog.open()
-          Mapping.axis2Key(code, ispos, KeyDialog.key)
+          Mapping.axis2Key((code, ispos)) = KeyDialog.key
           butt.text = KeyDialog.key.toString
       }
       (code, ispos) -> Items(bar, butt)
@@ -77,7 +77,7 @@ object Main extends SimpleSwingApplication {
     for {
       (code, _) <- Mapping.buttons
       Items(_, butt) <- buttons.get(code)
-    } butt.text = Mapping.butt2Key(code) match {
+    } butt.text = Mapping.butt2Key.get(code) match {
       case Some(key) => key.toString
       case None => "."
     }
@@ -85,7 +85,7 @@ object Main extends SimpleSwingApplication {
     for {
       (code, ispos, _) <- Mapping.axes
       Items(_, butt) <- axes.get(code, ispos)
-    } butt.text = Mapping.axis2Key(code, ispos) match {
+    } butt.text = Mapping.axis2Key.get(code, ispos) match {
       case Some(key) => key.toString
       case None => "."
     }
@@ -219,13 +219,8 @@ object Mapping {
     (JsEvDev.ABS_HAT0Y, true, "DPad Down")
   )
 
-  private val butt = mutable.Map.empty[Int, Key.Value]
-  private val axis = mutable.Map.empty[(Int, Boolean), Key.Value]
-
-  def butt2Key(code: Int): Option[Key.Value] = butt.synchronized { butt.get(code) }
-  def butt2Key(code: Int, key: Key.Value): Unit = butt.synchronized { butt(code) = key }
-  def axis2Key(code: Int, ispos: Boolean): Option[Key.Value] = axis.synchronized { axis.get((code, ispos)) }
-  def axis2Key(code: Int, ispos: Boolean, key: Key.Value): Unit = axis.synchronized { axis((code, ispos)) = key }
+  val butt2Key = concurrent.TrieMap.empty[Int, Key.Value]
+  val axis2Key = concurrent.TrieMap.empty[(Int, Boolean), Key.Value]
 
   def save() {
     val node =
@@ -233,11 +228,11 @@ object Mapping {
       <profile name="Default">
         <mapping>
         {
-          for ((code, key) <- butt) yield
+          for ((code, key) <- butt2Key) yield
             <button code={code.toString} key={key.toString}/>
         }
         {
-          for (((code, ispos), key) <- axis) yield
+          for (((code, ispos), key) <- axis2Key) yield
             <axis code={code.toString} ispos={ispos.toString} key={key.toString}/>
         }
         </mapping>
@@ -249,29 +244,30 @@ object Mapping {
 
   def load() {
     for (node <- Try { XML.loadFile(Paths.get(System.getProperty("user.home")).resolve(".sxbox2key").toString) }) {
-      butt.clear()
-      axis.clear()
+      butt2Key.clear()
+      axis2Key.clear()
       for {
         button <- node \ "profile" \ "mapping" \ "button"
         code <- Try { (button \@ "code").toInt }
         key <- Try { Key.withName(button \@ "key") }
-      } butt2Key(code, key)
+      } butt2Key(code) = key
       for {
         axis <- node \ "profile" \ "mapping" \ "axis"
         code <- Try { (axis \@ "code").toInt }
         ispos <- Try { (axis \@ "ispos").toBoolean }
         key <- Try { Key.withName(axis \@ "key") }
-      } axis2Key(code, ispos, key)
+      } axis2Key((code, ispos)) = key
     }
   }
 }
 
 class JsThread(callback: (Short, Short, Int) => Unit) {
-  private var info: Joystick.Info = null
-  @volatile
-  private var cont = true
+  @volatile private var run = false
+  @volatile private var running = false
+  private var info: Option[Joystick.Info] = None
   private val axesValues = mutable.Map.empty[Int, Int]
   private val robot = new Robot
+  object lock
 
   private def chkbnd(oldval: Int, newval: Int, bnd: Int, key: Key.Value) {
     if (oldval <= bnd) {
@@ -284,7 +280,7 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
   private def processEvent(evtype: Short, evcode: Short, evvalue: Int) {
     evtype match {
       case JsEvDev.EV_KEY =>
-        for (key <- Mapping.butt2Key(evcode))
+        for (key <- Mapping.butt2Key.get(evcode))
           if (evvalue == 0)
             robot.keyRelease(key.id)
           else
@@ -293,8 +289,8 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
         val oldval = axesValues.getOrElse(evcode, 0)
         axesValues(evcode) = evvalue
         for ((min, max) <- info.axes.get(evcode)) {
-          for (key <- Mapping.axis2Key(evcode, false)) chkbnd(-oldval, -evvalue, -min >> 1, key)
-          for (key <- Mapping.axis2Key(evcode, true)) chkbnd(oldval, evvalue, max >> 1, key)
+          for (key <- Mapping.axis2Key.get(evcode, false)) chkbnd(-oldval, -evvalue, -min >> 1, key)
+          for (key <- Mapping.axis2Key.get(evcode, true)) chkbnd(oldval, evvalue, max >> 1, key)
         }
       case _ =>
     }
@@ -305,7 +301,7 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
   private def read(js: Joystick) {
     val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE<<10)
     buf.order(ByteOrder.nativeOrder)
-    while (cont) {
+    while (run) {
       val cnt = js.read(buf)
       if (cnt < 0) throw new Exception
       buf.rewind()
@@ -318,25 +314,42 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
 
   private val thread = new Thread {
     override def run() {
-      //JsThread.this.synchronized {
+      do {
+        lock.synchronized { while (!run) lock.wait() }
+        runnig = true
         Joystick.withFilename(info.filename)(read)
-      //}
+        lock.synchronized { while (run) lock.wait() }
+        runnig = false
+      while (info.nonEmpty)
     }
   }
 
+  thread.start()
+
   def start(info: Joystick.Info) {
-    stop()
-    this.info = info
+    if (run) {
+      lock.synchronized { while (!running) lock.wait() }
+      run = false
+      JsEvDev.cancelOn()
+      lock.synchronized { while (running) lock.wait() }
+      JsEvDev.cancelOff()
+    }
+    this.info = Some(info)
     axesValues.clear()
-    thread.start()
+    run = true
   }
 
   def stop() {
-    cont = false
-    JsEvDev.cancelOn()
-    thread.join()
-    JsEvDev.cancelOff()
-    cont = true
+    if (run) {
+      lock.synchronized { while (!running) lock.wait() }
+      run = false
+      JsEvDev.cancelOn()
+      lock.synchronized { while (running) lock.wait() }
+      JsEvDev.cancelOff()
+    }
+    this.info = None
+    axesValues.clear()
+    run = true
   }
 }
 
