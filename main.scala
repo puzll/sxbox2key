@@ -11,6 +11,87 @@ import java.awt.{Robot, KeyboardFocusManager}
 import scala.xml.{XML, PrettyPrinter}
 import scala.util.Try
 
+object Controller extends SimpleSwingApplication {
+  import View.{Items, buttons, axes, jsSelect}
+
+  def top = View
+
+  System.loadLibrary("SXB2KJsEvDev")
+  if (JsEvDev.openPipe() < 0) throw new Exception
+
+  Mapping.load()
+  buttonsUpdate()
+
+  val jst = new JsThread(input)
+  if (Joystick.infos.nonEmpty) onJsSelect(jsSelect.selection.index)
+
+  View.reactions += {
+    case WindowClosing(_) =>
+      jst.start(None)
+      JsEvDev.closePipe()
+      Mapping.save()
+  }
+
+  def input(evtype: Short, code: Short, value: Int) {
+    Swing.onEDT {
+      evtype match {
+        case JsEvDev.EV_KEY =>
+          for (Items(bar, _) <- buttons.get(code)) bar.value = value
+        case JsEvDev.EV_ABS =>
+          for (Items(bar, _) <- axes.get(code, true)) bar.value = 0 max value
+          for (Items(bar, _) <- axes.get(code, false)) bar.value = 0 max -value
+        case _ =>
+      }
+    }
+  }
+
+  def buttonsUpdate() {
+    for {
+      (code, _) <- Mapping.buttons
+      Items(_, btn) <- buttons.get(code)
+    } btn.text = Mapping.butt2Key.get(code) match {
+      case Some(key) => key.toString
+      case None => "."
+    }
+    for {
+      (code, ispos, _) <- Mapping.axes
+      Items(_, btn) <- axes.get(code, ispos)
+    } btn.text = Mapping.axis2Key.get(code, ispos) match {
+      case Some(key) => key.toString
+      case None => "."
+    }
+  }
+
+  def onJsSelect(index: Int) {
+    for ((code, ispos, _) <- Mapping.axes)
+      axes(code, ispos).bar.max =
+        if (ispos)
+          Joystick.infos(index).axes(code)._2
+        else
+          -Joystick.infos(index).axes(code)._1
+    jst.start(Some(Joystick.infos(index)))
+  }
+
+  jsSelect.selection.reactions += {
+    case SelectionChanged(_) => onJsSelect(jsSelect.selection.index)
+  }
+
+  for ((code, _) <- Mapping.buttons; Items(_, btn) <- buttons.get(code))
+    btn.reactions += {
+      case ButtonClicked(_) =>
+        KeyDialog.open()
+        Mapping.butt2Key(code) = KeyDialog.key
+        btn.text = KeyDialog.key.toString
+    }
+  for ((code, ispos, _) <- Mapping.axes; Items(_, btn) <- axes.get(code, ispos))
+    btn.reactions += {
+      case ButtonClicked(_) =>
+        KeyDialog.open()
+        Mapping.axis2Key((code, ispos)) = KeyDialog.key
+        btn.text = KeyDialog.key.toString
+    }
+}
+
 object KeyDialog extends Dialog {
 
   title = "Key Reader"
@@ -34,154 +115,73 @@ object KeyDialog extends Dialog {
   }
 }
 
-object Main extends SimpleSwingApplication {
-
-  System.loadLibrary("SXB2KJsEvDev")
-  if (JsEvDev.openPipe() < 0) throw new Exception
-  Mapping.load()
-
-  val jsSelect = new ComboBox(Joystick.names)
+object View extends MainFrame {
 
   case class Items(val bar: ProgressBar, val button: Button)
 
+  val jsSelect = new ComboBox(Joystick.names)
+
   val buttons: Map[Int, Items] = (
-    for ((code, _) <- Mapping.buttons) yield {
-      val butt = new Button(".")
-      val bar = new ProgressBar
-      butt.reactions += {
-        case ButtonClicked(_) =>
-          KeyDialog.open()
-          Mapping.butt2Key(code) = KeyDialog.key
-          butt.text = KeyDialog.key.toString
-      }
-      bar.max = 1
-      code -> Items(bar, butt)
-    }
+    for ((code, _) <- Mapping.buttons)
+      yield code -> Items(new ProgressBar { max = 1 }, new Button("."))
   )(breakOut)
 
   val axes: Map[(Int, Boolean), Items] = (
-    for ((code, ispos, _) <- Mapping.axes) yield {
-      val butt = new Button(".")
-      val bar = new ProgressBar
-      butt.reactions += {
-        case ButtonClicked(_) =>
-          KeyDialog.open()
-          Mapping.axis2Key((code, ispos)) = KeyDialog.key
-          butt.text = KeyDialog.key.toString
-      }
-      (code, ispos) -> Items(bar, butt)
-    }
+    for ((code, ispos, _) <- Mapping.axes)
+      yield (code, ispos) -> Items(new ProgressBar, new Button("."))
   )(breakOut)
 
-  def buttonsUpdate() {
-    for {
-      (code, _) <- Mapping.buttons
-      Items(_, butt) <- buttons.get(code)
-    } butt.text = Mapping.butt2Key.get(code) match {
-      case Some(key) => key.toString
-      case None => "."
-    }
+  title = "XBox2Key"
 
-    for {
-      (code, ispos, _) <- Mapping.axes
-      Items(_, butt) <- axes.get(code, ispos)
-    } butt.text = Mapping.axis2Key.get(code, ispos) match {
-      case Some(key) => key.toString
-      case None => "."
-    }
-  }
-  buttonsUpdate()
+  val contGap = 10
+  val relGap = 5
+  val unrelGap = 10
 
-  val jst = new JsThread((evtype: Short, code: Short, value: Int) =>
-    Swing.onEDT {
-      evtype match {
-        case JsEvDev.EV_KEY =>
-          for (items <- buttons.get(code)) items.bar.value = value
-        case JsEvDev.EV_ABS =>
-          for (items <- axes.get(code, true)) items.bar.value = 0 max value
-          for (items <- axes.get(code, false)) items.bar.value = 0 max -value
-        case _ =>
-      }
-    }
-  )
-
-  def onJsSelect(index: Int) {
-    for ((code, ispos, _) <- Mapping.axes)
-      axes(code, ispos).bar.max =
-        if (ispos)
-          Joystick.infos(index).axes(code)._2
-        else
-          -Joystick.infos(index).axes(code)._1
-    jst.start(Joystick.infos(index))
-  }
-
-  if (Joystick.infos.nonEmpty) onJsSelect(jsSelect.selection.index)
-
-  listenTo(jsSelect.selection)
-  reactions += {
-    case SelectionChanged(_) => onJsSelect(jsSelect.selection.index)
-  }
-
-  def top = new MainFrame {
-    title = "XBox2Key"
-
-    val contGap = 10
-    val relGap = 5
-    val unrelGap = 10
-
-    contents = new BoxPanel(Orientation.Vertical) {
-      border = Swing.EmptyBorder(contGap, contGap, contGap, contGap)
-      jsSelect.maximumSize = (Int.MaxValue, jsSelect.preferredSize.height)
-      contents += jsSelect
-      contents += Swing.VStrut(unrelGap)
-      contents += new BoxPanel(Orientation.Horizontal) {
-        contents += new BoxPanel(Orientation.Vertical) {
-          for ((code, bname) <- Mapping.buttons) {
-            contents += Swing.VStrut(1)
-            contents += new BoxPanel(Orientation.Horizontal) {
-              val Items(bar, butt) = buttons(code)
-              val h = butt.preferredSize.height-3
-              maximumSize = (Int.MaxValue, h)
-              bar.allSizes = (h, h)
-              butt.allSizes = (4*h, h)
-              contents += Swing.HGlue
-              contents += new Label(bname)
-              contents += Swing.HStrut(relGap)
-              contents += bar
-              contents += Swing.HStrut(relGap)
-              contents += butt
-            }
+  contents = new BoxPanel(Orientation.Vertical) {
+    border = Swing.EmptyBorder(contGap, contGap, contGap, contGap)
+    jsSelect.maximumSize = (Int.MaxValue, jsSelect.preferredSize.height)
+    contents += jsSelect
+    contents += Swing.VStrut(unrelGap)
+    contents += new BoxPanel(Orientation.Horizontal) {
+      contents += new BoxPanel(Orientation.Vertical) {
+        for ((code, bname) <- Mapping.buttons) {
+          contents += Swing.VStrut(1)
+          contents += new BoxPanel(Orientation.Horizontal) {
+            val Items(bar, butt) = buttons(code)
+            val h = butt.preferredSize.height-3
+            maximumSize = (Int.MaxValue, h)
+            bar.allSizes = (h, h)
+            butt.allSizes = (4*h, h)
+            contents += Swing.HGlue
+            contents += new Label(bname)
+            contents += Swing.HStrut(relGap)
+            contents += bar
+            contents += Swing.HStrut(relGap)
+            contents += butt
           }
-          contents += Swing.VGlue
         }
-        contents += Swing.HStrut(unrelGap)
-        contents += new BoxPanel(Orientation.Vertical) {
-          for ((code, ispos, aname) <- Mapping.axes) {
-            contents += Swing.VStrut(1)
-            contents += new BoxPanel(Orientation.Horizontal) {
-              val Items(bar, butt) = axes(code, ispos)
-              val h = butt.preferredSize.height-3
-              maximumSize = (Int.MaxValue, h)
-              bar.allSizes = (4*h, h)
-              butt.allSizes = (4*h, h)
-              contents += Swing.HGlue
-              contents += new Label(aname)
-              contents += Swing.HStrut(relGap)
-              contents += bar
-              contents += Swing.HStrut(relGap)
-              contents += butt
-            }
-          }
-          contents += Swing.VGlue
-        }
+        contents += Swing.VGlue
       }
-    }
-
-    override def closeOperation() {
-      jst.stop()
-      JsEvDev.closePipe()
-      Mapping.save()
-      super.closeOperation()
+      contents += Swing.HStrut(unrelGap)
+      contents += new BoxPanel(Orientation.Vertical) {
+        for ((code, ispos, aname) <- Mapping.axes) {
+          contents += Swing.VStrut(1)
+          contents += new BoxPanel(Orientation.Horizontal) {
+            val Items(bar, butt) = axes(code, ispos)
+            val h = butt.preferredSize.height-3
+            maximumSize = (Int.MaxValue, h)
+            bar.allSizes = (4*h, h)
+            butt.allSizes = (4*h, h)
+            contents += Swing.HGlue
+            contents += new Label(aname)
+            contents += Swing.HStrut(relGap)
+            contents += bar
+            contents += Swing.HStrut(relGap)
+            contents += butt
+          }
+        }
+        contents += Swing.VGlue
+      }
     }
   }
 }
@@ -262,8 +262,10 @@ object Mapping {
 }
 
 class JsThread(callback: (Short, Short, Int) => Unit) {
-  @volatile private var run = false
-  @volatile private var running = false
+  object Cmd extends Enumeration {
+    val Start, Stop, None = Value
+  }
+  @volatile var cmd = Cmd.None
   private var info: Option[Joystick.Info] = None
   private val axesValues = mutable.Map.empty[Int, Int]
   private val robot = new Robot
@@ -288,7 +290,7 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
       case JsEvDev.EV_ABS =>
         val oldval = axesValues.getOrElse(evcode, 0)
         axesValues(evcode) = evvalue
-        for ((min, max) <- info.axes.get(evcode)) {
+        for (i <- info; (min, max) <- i.axes.get(evcode)) {
           for (key <- Mapping.axis2Key.get(evcode, false)) chkbnd(-oldval, -evvalue, -min >> 1, key)
           for (key <- Mapping.axis2Key.get(evcode, true)) chkbnd(oldval, evvalue, max >> 1, key)
         }
@@ -301,7 +303,7 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
   private def read(js: Joystick) {
     val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE<<10)
     buf.order(ByteOrder.nativeOrder)
-    while (run) {
+    while (cmd != Cmd.Stop) {
       val cnt = js.read(buf)
       if (cnt < 0) throw new Exception
       buf.rewind()
@@ -315,41 +317,39 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
   private val thread = new Thread {
     override def run() {
       do {
-        lock.synchronized { while (!run) lock.wait() }
-        runnig = true
-        Joystick.withFilename(info.filename)(read)
-        lock.synchronized { while (run) lock.wait() }
-        runnig = false
-      while (info.nonEmpty)
+        lock.synchronized {
+          while (cmd != Cmd.Start) {
+            while (cmd == Cmd.None) lock.wait()
+            if (cmd == Cmd.Stop) {
+              cmd = Cmd.None
+              JsEvDev.cancelOff()
+              lock.notify()
+            }
+          }
+          cmd = Cmd.None
+          lock.notify()
+        }
+        for (i <- info) Joystick.withFilename(i.filename)(read)
+      } while (info.nonEmpty)
     }
   }
 
   thread.start()
 
-  def start(info: Joystick.Info) {
-    if (run) {
-      lock.synchronized { while (!running) lock.wait() }
-      run = false
+  def start(info: Option[Joystick.Info]) {
+    lock.synchronized {
+      cmd = Cmd.Stop
       JsEvDev.cancelOn()
-      lock.synchronized { while (running) lock.wait() }
-      JsEvDev.cancelOff()
+      lock.notify()
+      while (cmd == Cmd.Stop) lock.wait()
     }
-    this.info = Some(info)
+    this.info = info
     axesValues.clear()
-    run = true
-  }
-
-  def stop() {
-    if (run) {
-      lock.synchronized { while (!running) lock.wait() }
-      run = false
-      JsEvDev.cancelOn()
-      lock.synchronized { while (running) lock.wait() }
-      JsEvDev.cancelOff()
+    lock.synchronized {
+      cmd = Cmd.Start
+      lock.notify()
     }
-    this.info = None
-    axesValues.clear()
-    run = true
+    if (info.isEmpty) thread.join()
   }
 }
 
