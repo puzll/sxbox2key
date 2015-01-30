@@ -1,11 +1,6 @@
 import java.nio.ByteBuffer;
 
 public class JsEvDev {
-    public static void main(String[] args) {
-        long fd = open("/dev/input/event14");
-        System.out.println(getName(fd));
-        close(fd);
-    }
 
     public static final int EV_KEY = 0x01;
     public static final int EV_ABS = 0x03;
