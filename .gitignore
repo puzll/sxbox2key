@@ -2,5 +2,4 @@
 *.o
 *.swp
 *.so
-XTestFakeKey.h
 JsEvDev.h

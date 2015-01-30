@@ -10,6 +10,9 @@ import scala.collection.breakOut
 import java.awt.{Robot, KeyboardFocusManager}
 import scala.xml.{XML, PrettyPrinter}
 import scala.util.Try
+import scala.concurrent._
+import scala.concurrent.duration.Duration
+import scala.concurrent.ExecutionContext.Implicits.global
 
 object Controller extends SimpleSwingApplication {
   import View.{Items, buttons, axes, jsSelect}
@@ -27,10 +30,30 @@ object Controller extends SimpleSwingApplication {
 
   View.reactions += {
     case WindowClosing(_) =>
-      jst.start(None)
+      jst.stop()
       JsEvDev.closePipe()
       Mapping.save()
   }
+
+  jsSelect.selection.reactions += {
+    case SelectionChanged(_) => onJsSelect(jsSelect.selection.index)
+  }
+
+  for ((code, _) <- Mapping.buttons; Items(_, btn) <- buttons.get(code))
+    btn.reactions += {
+      case ButtonClicked(_) =>
+        KeyDialog.open()
+        Mapping.butt2Key(code) = KeyDialog.key
+        btn.text = KeyDialog.key.toString
+    }
+
+  for ((code, ispos, _) <- Mapping.axes; Items(_, btn) <- axes.get(code, ispos))
+    btn.reactions += {
+      case ButtonClicked(_) =>
+        KeyDialog.open()
+        Mapping.axis2Key((code, ispos)) = KeyDialog.key
+        btn.text = KeyDialog.key.toString
+    }
 
   def input(evtype: Short, code: Short, value: Int) {
     Swing.onEDT {
@@ -69,27 +92,8 @@ object Controller extends SimpleSwingApplication {
           Joystick.infos(index).axes(code)._2
         else
           -Joystick.infos(index).axes(code)._1
-    jst.start(Some(Joystick.infos(index)))
+    jst.start(Joystick.infos(index))
   }
-
-  jsSelect.selection.reactions += {
-    case SelectionChanged(_) => onJsSelect(jsSelect.selection.index)
-  }
-
-  for ((code, _) <- Mapping.buttons; Items(_, btn) <- buttons.get(code))
-    btn.reactions += {
-      case ButtonClicked(_) =>
-        KeyDialog.open()
-        Mapping.butt2Key(code) = KeyDialog.key
-        btn.text = KeyDialog.key.toString
-    }
-  for ((code, ispos, _) <- Mapping.axes; Items(_, btn) <- axes.get(code, ispos))
-    btn.reactions += {
-      case ButtonClicked(_) =>
-        KeyDialog.open()
-        Mapping.axis2Key((code, ispos)) = KeyDialog.key
-        btn.text = KeyDialog.key.toString
-    }
 }
 
 object KeyDialog extends Dialog {
@@ -262,14 +266,12 @@ object Mapping {
 }
 
 class JsThread(callback: (Short, Short, Int) => Unit) {
-  object Cmd extends Enumeration {
-    val Start, Stop, None = Value
-  }
-  @volatile var cmd = Cmd.None
+  @volatile
+  private var running = true
+  private var f = Future.successful(())
   private var info: Option[Joystick.Info] = None
   private val axesValues = mutable.Map.empty[Int, Int]
   private val robot = new Robot
-  object lock
 
   private def chkbnd(oldval: Int, newval: Int, bnd: Int, key: Key.Value) {
     if (oldval <= bnd) {
@@ -301,9 +303,9 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
   }
 
   private def read(js: Joystick) {
-    val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE<<10)
+    val buf = ByteBuffer.allocateDirect(JsEvDev.INPUT_EVENT_SIZE<<6)
     buf.order(ByteOrder.nativeOrder)
-    while (cmd != Cmd.Stop) {
+    while (running) {
       val cnt = js.read(buf)
       if (cnt < 0) throw new Exception
       buf.rewind()
@@ -314,42 +316,25 @@ class JsThread(callback: (Short, Short, Int) => Unit) {
     }
   }
 
-  private val thread = new Thread {
-    override def run() {
-      do {
-        lock.synchronized {
-          while (cmd != Cmd.Start) {
-            while (cmd == Cmd.None) lock.wait()
-            if (cmd == Cmd.Stop) {
-              cmd = Cmd.None
-              JsEvDev.cancelOff()
-              lock.notify()
-            }
-          }
-          cmd = Cmd.None
-          lock.notify()
-        }
-        for (i <- info) Joystick.withFilename(i.filename)(read)
-      } while (info.nonEmpty)
+  private def newFuture() = Future {
+    blocking {
+      for (i <- info) Joystick.withFilename(i.filename)(read)
     }
   }
 
-  thread.start()
-
-  def start(info: Option[Joystick.Info]) {
-    lock.synchronized {
-      cmd = Cmd.Stop
-      JsEvDev.cancelOn()
-      lock.notify()
-      while (cmd == Cmd.Stop) lock.wait()
-    }
-    this.info = info
+  def start(info: Joystick.Info) {
+    stop()
+    this.info = Some(info)
     axesValues.clear()
-    lock.synchronized {
-      cmd = Cmd.Start
-      lock.notify()
-    }
-    if (info.isEmpty) thread.join()
+    f = newFuture()
+  }
+
+  def stop() {
+    running = false
+    JsEvDev.cancelOn()
+    Await.ready(f, Duration.Inf)
+    JsEvDev.cancelOff()
+    running = true
   }
 }
 
