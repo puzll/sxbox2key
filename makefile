@@ -1,11 +1,12 @@
 CFLAGS = -c -Wall -Wpedantic -Wextra -std=c11 -fpic -I"/usr/lib/jvm/java-7-openjdk-amd64/include"
 LFLAGS = -fpic -shared
 
-target/Controller.class: main.scala target/JsEvDev.class target/libSXB2KJsEvDev.so
-	scalac main.scala -d target -cp target
+target/classes/Controller.class: main.scala target/classes/JsEvDev.class
+	scalac main.scala -d target/classes -cp target/classes
 
-target/JsEvDev.class: JsEvDev.java target/libSXB2KJsEvDev.so
-	javac JsEvDev.java -d target -cp target
+target/classes/JsEvDev.class: JsEvDev.java target/libSXB2KJsEvDev.so
+	mkdir -p target/classes
+	javac JsEvDev.java -d target/classes
 
 target/libSXB2KJsEvDev.so: target/JsEvDev.o
 	gcc $(LFLAGS) target/JsEvDev.o -o target/libSXB2KJsEvDev.so
@@ -16,3 +17,6 @@ target/JsEvDev.o: JsEvDev.c JsEvDev.h
 
 JsEvDev.h: JsEvDev.java
 	javah JsEvDev
+
+sxbox2key.jar:
+	cd target/classes && jar cfm ../sxbox2key.jar ../../manifest.txt *.class

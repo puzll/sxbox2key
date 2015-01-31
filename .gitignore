@@ -1,5 +1,3 @@
-*.class
-*.o
+target/
 *.swp
-*.so
 JsEvDev.h

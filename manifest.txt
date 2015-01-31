@@ -1,0 +1,2 @@
+Main-Class: Controller
+Class-Path: scala-library.jar scala-swing_2.11-1.0.1.jar scala-xml_2.11-1.0.2.jar
